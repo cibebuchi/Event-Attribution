@@ -1,0 +1,152 @@
+# With FFNN
+
+import pandas as pd
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+import shap
+from sklearn.preprocessing import StandardScaler
+
+data_path = 'climate_index.csv'
+output_merged_path = 'FFNN_Yearly_Feature_Importance_new.csv'
+
+
+data = pd.read_excel(data_path)
+
+ffnn_yearly_results = []
+skipped_years = []
+
+
+def create_ffnn():
+    model = Sequential([
+        Dense(16, activation='relu', input_dim=2),
+        Dense(8, activation='relu'),
+        Dense(1, activation='linear')
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.01), loss='mse')
+    return model
+
+for year in sorted(data['Year'].unique()):
+    train_data = data[data['Year'] != year]
+    test_data = data[data['Year'] == year]
+    
+    X_train = train_data[['GW', 'IPO']].values
+    y_train = train_data['PRCP'].values
+    X_test = test_data[['GW', 'IPO']].values
+    y_test = test_data['PRCP'].values
+    
+    scaler = StandardScaler()
+    scaler.fit(y_train.reshape(-1, 1))
+    y_train = scaler.transform(y_train.reshape(-1, 1)).flatten()
+    y_test = scaler.transform(y_test.reshape(-1, 1)).flatten()
+
+    if len(X_train) < 10:
+        skipped_years.append(year)
+        continue
+
+    model = create_ffnn()
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+    model.fit(
+        X_train, y_train, 
+        epochs=100, 
+        batch_size=8, 
+        verbose=0, 
+        validation_split=0.1, 
+        callbacks=[early_stopping]
+    )
+
+    explainer = shap.GradientExplainer(model, X_train)
+    shap_values = explainer.shap_values(X_test)[0]  # Only one output neuron
+
+    for i, row in enumerate(X_test):
+        total_shap = abs(shap_values[i][0]) + abs(shap_values[i][1])
+        ffnn_yearly_results.append({
+            'Year': year,
+            'GW': row[0],
+            'IPO': row[1],
+            'FFNN_SHAP_GW': shap_values[i][0],
+            'FFNN_SHAP_IPO': shap_values[i][1],
+            'GW_Percent_Contribution': abs(shap_values[i][0]) / total_shap * 100,
+            'IPO_Percent_Contribution': abs(shap_values[i][1]) / total_shap * 100,
+        })
+
+ffnn_results_df = pd.DataFrame(ffnn_yearly_results)
+ffnn_results_df.to_csv(output_merged_path, index=False)
+
+skipped_years_log_path = 'skipped_years_log.txt'
+with open(skipped_years_log_path, 'w') as f:
+    for year in skipped_years:
+        f.write(f"{year}\n")
+
+
+
+
+********************************************
+
+WITH XGBoost
+
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+import shap
+from sklearn.preprocessing import StandardScaler
+
+data_path = 'climate_index.csv'
+output_merged_path = 'XGB_Yearly_Feature_Importance_new.csv'
+
+data = pd.read_excel(data_path)
+
+xgb_yearly_results = []
+skipped_years = []
+
+for year in sorted(data['Year'].unique()):
+    train_data = data[data['Year'] != year]
+    test_data = data[data['Year'] == year]
+    
+    X_train = train_data[['GW', 'IPO']].values
+    y_train = train_data['PRCP'].values
+    X_test = test_data[['GW', 'IPO']].values
+    y_test = test_data['PRCP'].values
+    
+    scaler = StandardScaler()
+    scaler.fit(y_train.reshape(-1, 1))
+    y_train = scaler.transform(y_train.reshape(-1, 1)).flatten()
+    y_test = scaler.transform(y_test.reshape(-1, 1)).flatten()
+
+    if len(X_train) < 10:
+        skipped_years.append(year)
+        continue
+
+    model = xgb.XGBRegressor(
+        objective='reg:squarederror',
+        learning_rate=0.01,
+        max_depth=4,
+        n_estimators=100,
+        random_state=42
+    )
+    model.fit(X_train, y_train)
+
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_test)
+
+    for i, row in enumerate(X_test):
+        total_shap = abs(shap_values[i][0]) + abs(shap_values[i][1])
+        xgb_yearly_results.append({
+            'Year': year,
+            'GW': row[0],
+            'IPO': row[1],
+            'XGB_SHAP_GW': shap_values[i][0],
+            'XGB_SHAP_IPO': shap_values[i][1],
+            'GW_Percent_Contribution': abs(shap_values[i][0]) / total_shap * 100,
+            'IPO_Percent_Contribution': abs(shap_values[i][1]) / total_shap * 100,
+        })
+
+xgb_results_df = pd.DataFrame(xgb_yearly_results)
+xgb_results_df.to_csv(output_merged_path, index=False)
+
+skipped_years_log_path = 'skipped_years_log.txt'
+with open(skipped_years_log_path, 'w') as f:
+    for year in skipped_years:
+        f.write(f"{year}\n")
